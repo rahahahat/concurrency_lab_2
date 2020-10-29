@@ -5,36 +5,43 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"time"
 )
 
 var debug *bool
 
 // An executor is a type of a worker goroutine that handles the incoming transactions.
-func executor(bank *bank, executorId int, transactionQueue <-chan transaction, done chan<- bool) {
+func executor(bank *bank, executorId int, done chan<- bool, GoodTransactions chan transaction) {
 	for {
-		t := <-transactionQueue
-
+		t := <-GoodTransactions
 		from := bank.getAccountName(t.from)
 		to := bank.getAccountName(t.to)
-
 		fmt.Println("Executor\t", executorId, "attempting transaction from", from, "to", to)
 		e := bank.addInProgress(t, executorId) // Removing this line will break visualisations.
 
-		// bank.lockAccount(t.from, strconv.Itoa(executorId))
-		// fmt.Println("Executor\t", executorId, "locked account", from)
-		// bank.lockAccount(t.to, strconv.Itoa(executorId))
-		// fmt.Println("Executor\t", executorId, "locked account", to)
-
 		bank.execute(t, executorId)
 
-		// bank.unlockAccount(t.from, strconv.Itoa(executorId))
+		bank.unlockAccount(t.from, strconv.Itoa(executorId))
 		// fmt.Println("Executor\t", executorId, "unlocked account", from)
-		// bank.unlockAccount(t.to, strconv.Itoa(executorId))
+		bank.unlockAccount(t.to, strconv.Itoa(executorId))
 		// fmt.Println("Executor\t", executorId, "unlocked account", to)
 
 		bank.removeCompleted(e, executorId) // Removing this line will break visualisations.
 		done <- true
+	}
+}
+
+func manager(bank *bank, GoodTransactions chan transaction, transactions chan transaction) {
+	for {
+		t := <-transactions
+		if bank.getAccountLockStatus(t.from) || bank.getAccountLockStatus(t.to) {
+			transactions <- t
+			continue
+		}
+		bank.lockAccount(t.from, "lock")
+		bank.lockAccount(t.to, "lock")
+		GoodTransactions <- t
 	}
 }
 
@@ -65,6 +72,8 @@ func main() {
 	startSum := bank.sum()
 
 	transactionQueue := make(chan transaction, transactions)
+	goodTransactions := make(chan transaction, transactions)
+
 	expectedMoneyTransferred := 0
 	for i := 0; i < transactions; i++ {
 		t := bank.getTransaction()
@@ -73,9 +82,9 @@ func main() {
 	}
 
 	done := make(chan bool)
-
+	go manager(&bank, goodTransactions, transactionQueue)
 	for i := 0; i < bankSize; i++ {
-		go executor(&bank, i, transactionQueue, done)
+		go executor(&bank, i, done, goodTransactions)
 	}
 
 	for total := 0; total < transactions; total++ {
